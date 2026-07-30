@@ -34,8 +34,62 @@ export default defineConfig(
 		}
 	},
 	{
-		// Override or add rule settings here, such as:
-		// 'svelte/button-has-type': 'error'
-		rules: {}
+		// REBUILD.md §4 — the core is pure. It runs under `bun` with no server,
+		// so a SvelteKit virtual module here is a CLI outage, not a style issue.
+		files: ['src/lib/pipeline/**/*.ts', 'src/lib/runner/**/*.ts', 'src/lib/server/db/index.ts'],
+		rules: {
+			'no-restricted-imports': [
+				'error',
+				{
+					patterns: [
+						{
+							group: ['$app/*', '$env/*', '@sveltejs/*'],
+							message: 'Core must not import SvelteKit — it runs under bun with no server.'
+						},
+						{
+							group: ['$lib/components/*'],
+							message: 'Core must not import UI.'
+						}
+					]
+				}
+			]
+		}
+	},
+	{
+		// REBUILD.md §4 — pipeline emits, runner persists.
+		files: ['src/lib/pipeline/**/*.ts'],
+		rules: {
+			'no-restricted-imports': [
+				'error',
+				{
+					patterns: [
+						{
+							group: ['**/server/db', '**/server/db/*'],
+							message: 'pipeline/ is pure: emit step results, let runner/ persist them.'
+						}
+					]
+				}
+			],
+			// I/O is an adapter concern — this is what keeps an MCP adapter to an
+			// afternoon rather than an untangling job.
+			'no-console': 'error'
+		}
+	},
+	{
+		// REBUILD.md §3 — Svelte 5 runes only.
+		files: ['**/*.svelte', '**/*.svelte.ts'],
+		rules: {
+			'no-restricted-imports': [
+				'error',
+				{
+					paths: [
+						{
+							name: 'svelte/store',
+							message: 'Runes only. Use $state/$derived, not stores.'
+						}
+					]
+				}
+			]
+		}
 	}
 );

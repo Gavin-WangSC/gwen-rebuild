@@ -9,8 +9,8 @@
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
 		"gwen": "bun run src/cli/index.ts",
-		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && bun test && eslint . && prettier --check .",
+		"check:fast": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && bun test",
 		"lint": "prettier --check . && eslint .",
 		"format": "prettier --write .",
 		"db:push": "drizzle-kit push",
@@ -20,14 +20,14 @@
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",
-		"@libsql/client": "^0.17.3",
 		"@sveltejs/adapter-node": "^5.5.4",
 		"@sveltejs/kit": "^2.63.0",
 		"@sveltejs/vite-plugin-svelte": "^7.1.2",
 		"@tailwindcss/vite": "^4.3.0",
+		"@types/bun": "^1.2.19",
 		"@types/node": "^24",
+		"daisyui": "^5.7.7",
 		"drizzle-kit": "^0.31.10",
-		"drizzle-orm": "^0.45.2",
 		"eslint": "^10.4.1",
 		"eslint-config-prettier": "^10.1.8",
 		"eslint-plugin-svelte": "^3.19.0",
@@ -41,5 +41,11 @@
 		"typescript": "^6.0.3",
 		"typescript-eslint": "^8.60.1",
 		"vite": "^8.0.16"
+	},
+	"dependencies": {
+		"@libsql/client": "^0.17.3",
+		"drizzle-orm": "^0.45.2",
+		"openai": "^7.1.0",
+		"zod": "^4.4.3"
 	}
 }
