@@ -14,5 +14,11 @@ export type Database = ReturnType<typeof createDb>;
  */
 export function createDb(url: string) {
 	if (!url) throw new Error('DATABASE_URL is not set');
-	return drizzle(createClient({ url }), { schema });
+	const client = createClient({ url });
+	// SQLite ignores every `references()` in schema.ts unless this is on, and it
+	// is off by default. The old system had 11 assignments whose answer files did
+	// not exist; declared-but-unenforced keys is how you get there. Issued on the
+	// client before any query is queued behind it.
+	void client.execute('PRAGMA foreign_keys = ON');
+	return drizzle(client, { schema });
 }
