@@ -51,3 +51,116 @@ export const essaySchema = z
 export function paragraphsOfValidEssay(essay: string): string[] {
 	return paragraphsOf(essaySchema.parse(essay));
 }
+
+/** One essay's input to the pipeline (REBUILD.md §5.1). */
+export const essayInputSchema = z.object({
+	essay: essaySchema,
+	question: z.string().min(1),
+	/** The source passage. Optional in the old data; empty is allowed. */
+	context: z.string().default('')
+});
+export type EssayInput = z.infer<typeof essayInputSchema>;
+
+/** `{ 原文, 优点?, 缺点? }` — Criterion D. */
+export const languageNoteSchema = z.object({
+	原文: z.string(),
+	优点: z.string().optional(),
+	缺点: z.string().optional()
+});
+export type LanguageNote = z.infer<typeof languageNoteSchema>;
+
+/** `{ 原文, 问题? }` — Criterion B. */
+export const analysisNoteSchema = z.object({
+	原文: z.string(),
+	问题: z.string().optional()
+});
+export type AnalysisNote = z.infer<typeof analysisNoteSchema>;
+
+/**
+ * A model reply carrying annotations: either one note or a list of them.
+ *
+ * v1's `_parse_and_collect` caught the decode error, logged a warning, and let
+ * the step report success with the annotations missing (defect D6). Here a parse
+ * failure is a parse failure — `safeParse` fails, the step fails, and the
+ * scheduler retries it.
+ */
+export function annotationListSchema<T extends z.ZodType>(note: T) {
+	return z.union([z.array(note), note.transform((one) => [one])]);
+}
+
+/** The mark a `compute_final_score` step extracts. Never 0 from a model (see prompts.ts). */
+export const modelScoreSchema = z.number().int().min(1).max(5);
+
+/** v1's extraction call replies `{"score": X}`; the regex fallback lives in llm.ts. */
+export const scoreReplySchema = z.object({ score: modelScoreSchema });
+
+export const CRITERIA = ['language', 'analysis', 'structure', 'understanding'] as const;
+export type Criterion = (typeof CRITERIA)[number];
+
+/**
+ * The accumulated state of one essay's grading run.
+ *
+ * `structuralAnalyses` is a map keyed by the step id that produced it (7, 8, 9),
+ * never an array appended to and read back by computed index. That is the fix
+ * for defect D3: v1's steps 10/11/12 read `structuralAnalyses[paramIndex - 1]`,
+ * so a retry or partial resume silently paired paragraph 3's analysis with
+ * paragraph 4's annotation, with nothing to detect it.
+ */
+export type PipelineState = {
+	paragraphs: string[];
+	languageMessages: ChatMessage[];
+	analysisMessages: ChatMessage[];
+	/**
+	 * Annotations keyed by the step that produced them, then read back in step
+	 * order. Steps 10/11/12 run concurrently, so appending to a shared list would
+	 * make the order — and therefore step 13's prompt — depend on which reply
+	 * arrived first. Same reasoning as `structuralAnalyses`: key it, never append.
+	 */
+	languageAnnotations: Map<number, LanguageNote[]>;
+	analysisAnnotations: Map<number, AnalysisNote[]>;
+	structuralAnalyses: Map<number, string>;
+	structureGraph: string | null;
+	structureDescription: string | null;
+	understandingAnnotation: string | null;
+	scores: Record<Criterion, number | null>;
+};
+
+export type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
+
+export function initialState(paragraphs: string[]): PipelineState {
+	return {
+		paragraphs,
+		languageMessages: [],
+		analysisMessages: [],
+		languageAnnotations: new Map(),
+		analysisAnnotations: new Map(),
+		structuralAnalyses: new Map(),
+		structureGraph: null,
+		structureDescription: null,
+		understandingAnnotation: null,
+		// null is not-yet-scored. Never 0, which is a real mark (invariant 2).
+		scores: { language: null, analysis: null, structure: null, understanding: null }
+	};
+}
+
+/** Keyed annotations flattened in ascending step order — deterministic. */
+export function inStepOrder<T>(byStep: Map<number, T[]>): T[] {
+	return [...byStep.entries()].sort(([a], [b]) => a - b).flatMap(([, notes]) => notes);
+}
+
+/** What one step produced, or why it could not. */
+export type StepResult =
+	| { stepId: number; status: 'succeeded'; attempts: number; output: unknown }
+	| { stepId: number; status: 'failed'; attempts: number; error: string };
+
+/** One essay's finished grading. Incomplete criteria stay null — never 0, never 3. */
+export type EssayResult = {
+	scores: Record<Criterion, number | null>;
+	annotations: {
+		language: LanguageNote[];
+		analysis: AnalysisNote[];
+		structure: { graph: string | null; description: string | null };
+		understanding: string | null;
+	};
+	steps: StepResult[];
+};
