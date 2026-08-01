@@ -8,3 +8,7 @@ bun.lockb
 # Miscellaneous
 /static/
 /drizzle/
+
+# Ported verbatim from GWen v1 and tuned against real marking (REBUILD.md §5).
+# Reformatting would rewrite prompt text that must stay byte-identical.
+/src/lib/pipeline/prompts.json
