@@ -1,0 +1,6 @@
+# Project-local Codex capabilities. Product and safety rules live in AGENTS.md.
+# Codex discovers the repository's .codex/hooks.json automatically.
+
+[mcp_servers.svelte]
+command = "npx"
+args = ["-y", "@sveltejs/mcp"]

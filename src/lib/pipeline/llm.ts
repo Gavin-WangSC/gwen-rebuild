@@ -5,10 +5,10 @@ import type { ChatMessage } from './schema';
  * and even here the client is injected rather than constructed — the pipeline
  * stays pure, and every test runs offline with no key and no spend.
  *
- * Settings ported from `scripts/utils.py`: `qwen3.5-flash`, reasoning at 0.6,
- * extraction at 0.1, 1800-second timeout, the DashScope **batch** endpoint
- * (REBUILD.md §5.4 — latency, cost and timeout behaviour differ from the
- * standard one, so nothing may silently fall back to it).
+ * The constants below preserve the baseline ported from `scripts/utils.py`:
+ * `qwen3.5-flash`, reasoning at 0.6, extraction at 0.1, 1800-second timeout,
+ * and the DashScope batch-compatible endpoint. The deployment provider and
+ * endpoint strategy remain open; a leaf adapter must make that choice explicit.
  */
 
 export const MODEL = 'qwen3.5-flash';
@@ -102,8 +102,8 @@ type OpenAiLike = {
  *
  * The caller constructs the SDK — `new OpenAI({ apiKey, baseURL, timeout })` —
  * because config arrives as arguments and only leaf files know where config
- * lives (invariant 5). `src/cli/` will read `DASHSCOPE_API_KEY` and
- * `DASHSCOPE_BASE_URL` from `process.env` and pass the result here.
+ * lives (invariant 5). The future provider adapter will own environment lookup;
+ * its variable names are not settled yet.
  */
 export function fromOpenAi(client: OpenAiLike): LlmClient {
 	return {
