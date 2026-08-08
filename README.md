@@ -8,8 +8,9 @@ Given a student's essay and the exam question, GWen produces:
 - **Inline annotations** on the original text: what works, what doesn't, and where
 - **A Mermaid diagram** of the essay's argument structure
 
-> **Status: rebuild in progress.** This repository currently contains the scaffold, toolchain, and
-> CI. The grading pipeline is not implemented yet — see [Project status](#project-status).
+> **Status: rebuild in progress.** The database and pure 16-step grading pipeline are implemented
+> and tested. The runner, operational CLI, provider integration, and viewer are still to be built —
+> see [Project status](#project-status).
 
 ---
 
@@ -81,7 +82,7 @@ improvises.
 | Viewer     | SvelteKit 2 / Svelte 5 (runes)                          |
 | Styling    | Tailwind 4 + daisyUI 5                                  |
 | Tests      | `bun test`                                              |
-| Model      | `qwen3.5-flash` via the DashScope OpenAI-compatible API |
+| Model      | OpenAI-compatible boundary; deployment provider is open |
 
 One language, and no framework layer over the model client. The pipeline is a dependency-ordered
 DAG and a loop — not an agent.
@@ -96,16 +97,19 @@ Requires [Bun](https://bun.sh) 1.2 or later.
 bun install
 ```
 
-Copy the example environment file and fill in your own values:
+Copy the example environment file for local database work:
 
 ```bash
 cp .env.example .env
 ```
 
-| Variable            | Purpose                                     |
-| ------------------- | ------------------------------------------- |
-| `DATABASE_URL`      | libSQL/SQLite URL, e.g. `file:local.db`     |
-| `DASHSCOPE_API_KEY` | DashScope API key, required for model calls |
+| Variable       | Purpose                                 |
+| -------------- | --------------------------------------- |
+| `DATABASE_URL` | libSQL/SQLite URL, e.g. `file:local.db` |
+
+The example also records the inherited DashScope variables used by the current pipeline adapter
+stub. They are not a settled deployment contract: provider selection is deliberately open until
+the first end-to-end vertical slice.
 
 Then:
 
@@ -126,17 +130,22 @@ bun run gwen      # the CLI
 
 - Scaffold, toolchain, and the `check` gauntlet
 - CI on every push and pull request, required to merge
-- `createDb(url)` — a framework-free database factory shared by the CLI and the viewer
+- SQLite/Drizzle schema, migration, database factory, and seed conversion
+- Pure 16-step grading DAG with fixed prompts, validation, retry behavior, and failure propagation
+- Offline pipeline tests using an injected fake model
 
 **Not built yet:**
 
-- The 16-step grading pipeline, its prompts, and the scheduler
-- Database schema and migrations
+- Runner persistence/resume around the pipeline
+- A settled provider adapter and configuration contract
 - The `gwen` commands listed above
 - The web viewer
 
 The command table describes the intended contract, not shipped behaviour. It's written down
 because the contract was designed before the code, deliberately.
+
+Development state, settled decisions, open decisions, and the next milestone live in
+[docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md).
 
 ---
 
