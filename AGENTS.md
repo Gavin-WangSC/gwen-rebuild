@@ -29,9 +29,10 @@ These are product truths, not preferences. Most are lint- or CI-enforced; all of
 
 ## Current boundary
 
-The database schema and pure 16-step pipeline are built. The runner, real CLI commands, provider
-adapter/configuration, and viewer are not. Provider choice, provider batch APIs, and cross-essay
-concurrency are open decisions; do not infer them from legacy defaults in the code.
+The database schema, pure 16-step pipeline, and DB-backed per-answer checkpoint runner are built.
+Job orchestration/process lifecycle, real CLI commands, provider adapter/configuration, and viewer
+are not. Provider choice, provider batch APIs, and cross-essay concurrency are open decisions; do
+not infer them from legacy defaults in the code.
 
 The next milestone is one provider-neutral end-to-end vertical slice. Acceptance needs one or two
 real essays. A batch-mechanics test may run roughly 20 duplicates with a fake model; it is not a
@@ -46,6 +47,34 @@ grading-quality evaluation.
 - If a step fails, say the task is incomplete and show the real output.
 
 `main` requires a passing CI check and a PR — direct pushes are blocked.
+
+## Planner, builder, and reviewer
+
+Use [docs/REVIEWING.md](docs/REVIEWING.md) and one role-specific skill: `roadmap-planner`,
+`review-builder`, or `independent-reviewer`. Keep planner, builder, and reviewer in separate
+persistent Codex tasks; a task never switches roles or orchestrates the other two internally. The
+user performs each handoff.
+
+`review.md` is the ignored local mailbox. A builder may mark a fix only `awaiting_re_review`; only
+the reviewer may append passes, discover concrete defects, verify fixes, or approve the exact diff.
+Every review pass covers the complete current diff, including defects not mentioned earlier, but
+the reviewer does not propose features, roadmap work, or speculative redesigns. Only the planner
+writes cross-task briefs. Run `bun run review:lint` after mailbox edits and `bun run review:check`
+before approval or commit. The approved uncommitted fingerprint is consumed by the commit; pushes
+rely on CI and branch protection as documented in `docs/REVIEWING.md`.
+
+Admit only material, actionable findings introduced or exposed by the current change and supported
+by evidence. Prefer no finding to speculative feedback, deduplicate by location and remedy, cite an
+applicable project rule when it materially supports the issue, and use inline review comments for
+changed-line feedback. The structured ledger stays in `review.md`, not the visible response.
+
+Review runner/checkpoint changes specifically for:
+
+1. Paper type and job/assignment/answer/question ownership before any model spending.
+2. Crash boundaries: durable successes are not repeated, incomplete calls are safely repeatable,
+   and provider attempts are not undercounted.
+3. Any rubric, prompt, step-order, dependency, or conversation-shape change. Treat it as a marking
+   change requiring owner approval, not routine plumbing.
 
 ## Ask, don't assume
 

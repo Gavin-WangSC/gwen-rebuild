@@ -180,8 +180,18 @@ describe('step_results', () => {
 
 		const base = { jobId: 'job-1', answerId: 'ans-1', status: 'succeeded' as const };
 		await db.insert(stepResults).values([
-			{ ...base, stepId: 7, output: { analysis: 'paragraph 2' } },
-			{ ...base, stepId: 8, output: { analysis: 'paragraph 3' } }
+			{
+				...base,
+				stepId: 7,
+				output: { analysis: 'paragraph 2' },
+				rawReply: 'original paragraph 2 reply'
+			},
+			{
+				...base,
+				stepId: 8,
+				output: { analysis: 'paragraph 3' },
+				rawReply: 'original paragraph 3 reply'
+			}
 		]);
 
 		await expect(
@@ -196,6 +206,7 @@ describe('step_results', () => {
 			.from(stepResults)
 			.where(sql`step_id = 8`);
 		expect(step8?.output).toEqual({ analysis: 'paragraph 3' });
+		expect(step8?.rawReply).toBe('original paragraph 3 reply');
 	});
 
 	it('reject a step id outside the 16-step DAG', async () => {

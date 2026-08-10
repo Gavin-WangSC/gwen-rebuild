@@ -1,0 +1,4 @@
+interface:
+  display_name: 'Independent Reviewer'
+  short_description: 'Review defects with inline, durable findings'
+  default_prompt: "Use $independent-reviewer to review GWen's current diff, leave concise inline feedback, and persist only actionable defects in review.md."

@@ -1,0 +1,4 @@
+interface:
+  display_name: 'Roadmap Planner'
+  short_description: 'Direct GWen milestones and role handoffs'
+  default_prompt: 'Use $roadmap-planner to assess GWen status and prepare the next role-specific task brief.'

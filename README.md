@@ -8,9 +8,9 @@ Given a student's essay and the exam question, GWen produces:
 - **Inline annotations** on the original text: what works, what doesn't, and where
 - **A Mermaid diagram** of the essay's argument structure
 
-> **Status: rebuild in progress.** The database and pure 16-step grading pipeline are implemented
-> and tested. The runner, operational CLI, provider integration, and viewer are still to be built —
-> see [Project status](#project-status).
+> **Status: rebuild in progress.** The database, pure 16-step grading pipeline, and DB-backed
+> per-answer checkpoint runner are implemented and tested. Job orchestration, the operational CLI,
+> provider integration, and viewer are still to be built — see [Project status](#project-status).
 
 ---
 
@@ -133,10 +133,11 @@ bun run gwen      # the CLI
 - SQLite/Drizzle schema, migration, database factory, and seed conversion
 - Pure 16-step grading DAG with fixed prompts, validation, retry behavior, and failure propagation
 - Offline pipeline tests using an injected fake model
+- DB-backed per-answer runner with durable step checkpoints and exact failure resume
 
 **Not built yet:**
 
-- Runner persistence/resume around the pipeline
+- Job orchestration, process lifecycle, and cross-essay scheduling
 - A settled provider adapter and configuration contract
 - The `gwen` commands listed above
 - The web viewer

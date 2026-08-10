@@ -1,0 +1,1 @@
+ALTER TABLE `step_results` ADD `raw_reply` text;

@@ -199,10 +199,12 @@ export const stepResults = sqliteTable(
 		/** 1–16 for Paper 1. */
 		stepId: integer('step_id').notNull(),
 		status: text('status').notNull().$type<StepStatus>(),
-		/** Attempts made so far. Retries are 3 with exponential backoff (§5.4). */
+		/** Cumulative model calls for this step across retries and resume invocations. */
 		attempt: integer('attempt').notNull().default(0),
 		/** The step's Zod-validated output. Null until it succeeds. */
 		output: text('output', { mode: 'json' }),
+		/** Original reasoning reply; required to restore rolling conversations exactly. */
+		rawReply: text('raw_reply'),
 		/** Why it failed. A parse failure is a failure, never a silent success (D6). */
 		error: text('error'),
 		startedAt: timestampMs('started_at'),

@@ -75,7 +75,12 @@ describe('gradeEssay', () => {
 	it('runs all 16 steps and produces four marks', async () => {
 		const { client } = stubClient();
 		const steps: StepResult[] = [];
-		const result = await gradeEssay(INPUT, { llm: client, onStep: (s) => steps.push(s) });
+		const result = await gradeEssay(INPUT, {
+			llm: client,
+			onStepSettled: (step) => {
+				steps.push(step);
+			}
+		});
 
 		expect(result.steps).toHaveLength(16);
 		expect(result.steps.every((step) => step.status === 'succeeded')).toBe(true);
@@ -106,7 +111,12 @@ describe('gradeEssay', () => {
 	it('emits results in dependency order, never before a dependency', async () => {
 		const { client } = stubClient();
 		const order: number[] = [];
-		await gradeEssay(INPUT, { llm: client, onStep: (s) => order.push(s.stepId) });
+		await gradeEssay(INPUT, {
+			llm: client,
+			onStepSettled: (step) => {
+				order.push(step.stepId);
+			}
+		});
 
 		const positionOf = (id: number) => order.indexOf(id);
 		const edges: [number, number][] = [
@@ -220,6 +230,128 @@ describe('gradeEssay', () => {
 		};
 		const result = await gradeEssay(INPUT, { llm: single });
 		expect(result.annotations.language).toHaveLength(5);
+	});
+
+	it('restores exact rolling conversations and never repeats succeeded calls', async () => {
+		const baseline = stubClient();
+		const completed = await gradeEssay(INPUT, { llm: baseline.client });
+		const checkpoints = completed.steps.filter(
+			(step) => step.status === 'succeeded' && (step.stepId === 1 || step.stepId === 7)
+		);
+
+		const resumed = stubClient();
+		await gradeEssay(INPUT, { llm: resumed.client, resumeFrom: checkpoints });
+
+		expect(resumed.calls).toHaveLength(18);
+		const requestEndingWith = (calls: Call[], content: string) =>
+			calls.find((call) => call.messages.at(-1)?.content === content)?.messages;
+		expect(requestEndingWith(resumed.calls, 'Paragraph 2: 主体一。')).toEqual(
+			requestEndingWith(baseline.calls, 'Paragraph 2: 主体一。')
+		);
+		expect(requestEndingWith(resumed.calls, '主体二。')).toEqual(
+			requestEndingWith(baseline.calls, '主体二。')
+		);
+	});
+
+	it('rejects corrupt or dependency-incomplete checkpoints before model calls', async () => {
+		const { client, calls } = stubClient();
+		const valid = {
+			stepId: 1,
+			status: 'succeeded' as const,
+			attempts: 1,
+			reply: LANGUAGE_REPLY,
+			output: JSON.parse(LANGUAGE_REPLY)
+		};
+
+		await expect(gradeEssay(INPUT, { llm: client, resumeFrom: [valid, valid] })).rejects.toThrow(
+			'duplicate checkpoint'
+		);
+		await expect(
+			gradeEssay(INPUT, { llm: client, resumeFrom: [{ ...valid, stepId: 2 }] })
+		).rejects.toThrow('missing succeeded dependency 1');
+		await expect(
+			gradeEssay(INPUT, { llm: client, resumeFrom: [{ ...valid, output: 'not annotations' }] })
+		).rejects.toThrow();
+		await expect(
+			gradeEssay(INPUT, { llm: client, resumeFrom: [{ ...valid, reply: '' }] })
+		).rejects.toThrow();
+		expect(calls).toHaveLength(0);
+	});
+
+	it('awaits durable settlement before starting dependent waves', async () => {
+		const { client, calls } = stubClient();
+		let release!: () => void;
+		let hookStarted!: () => void;
+		const barrier = new Promise<void>((resolve) => (release = resolve));
+		const started = new Promise<void>((resolve) => (hookStarted = resolve));
+
+		const grading = gradeEssay(INPUT, {
+			llm: client,
+			onStepSettled: async (step) => {
+				if (step.stepId === 1) {
+					hookStarted();
+					await barrier;
+				}
+			}
+		});
+
+		await started;
+		expect(calls).toHaveLength(2); // only the first independent wave
+		expect(calls.some((call) => call.messages.at(-1)?.content === 'Paragraph 2: 主体一。')).toBe(
+			false
+		);
+		release();
+		await grading;
+	});
+
+	it('awaits durable start state before spending model budget', async () => {
+		const { client, calls } = stubClient();
+		let release!: () => void;
+		let hookStarted!: () => void;
+		const barrier = new Promise<void>((resolve) => (release = resolve));
+		const started = new Promise<void>((resolve) => (hookStarted = resolve));
+
+		const grading = gradeEssay(INPUT, {
+			llm: client,
+			onStepStart: async (stepId) => {
+				if (stepId === 1) {
+					hookStarted();
+					await barrier;
+				}
+			}
+		});
+
+		await started;
+		expect(calls).toHaveLength(0);
+		release();
+		await grading;
+	});
+
+	it('propagates persistence failure without starting a dependent wave', async () => {
+		const { client, calls } = stubClient();
+		await expect(
+			gradeEssay(INPUT, {
+				llm: client,
+				onStepSettled: (step) => {
+					if (step.stepId === 1) throw new Error('database unavailable');
+				}
+			})
+		).rejects.toThrow('database unavailable');
+		expect(calls).toHaveLength(2);
+	});
+
+	it('aborts before provider calls when attempt persistence fails', async () => {
+		const { client, calls } = stubClient();
+
+		await expect(
+			gradeEssay(INPUT, {
+				llm: client,
+				onModelCall: () => {
+					throw new Error('attempt write failed');
+				}
+			})
+		).rejects.toThrow('attempt write failed');
+		expect(calls).toHaveLength(0);
 	});
 });
 
