@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { gradeEssay } from '../pipeline/schedule';
 import { STEPS } from '../pipeline/steps';
@@ -15,6 +15,7 @@ import {
 	answers,
 	assignments,
 	CRITERIA,
+	JOB_STATUSES,
 	jobs,
 	questions,
 	scoreAudit,
@@ -23,11 +24,18 @@ import {
 } from '../server/db/schema';
 
 const idsSchema = z.object({ jobId: z.string().min(1), answerId: z.string().min(1) });
+const jobOptionsSchema = idsSchema.extend({ retryFailed: z.boolean().optional().default(false) });
 
 const jobRowSchema = z.object({
 	id: z.string(),
 	assignmentId: z.string(),
-	paperType: z.enum(['p1', 'p2'])
+	paperType: z.enum(['p1', 'p2']),
+	status: z.enum(JOB_STATUSES),
+	totalAnswers: z.number().int().nonnegative(),
+	completedAnswers: z.number().int().nonnegative(),
+	failedAnswers: z.number().int().nonnegative(),
+	startedAt: z.date().nullable(),
+	finishedAt: z.date().nullable()
 });
 
 const answerRowSchema = z.object({
@@ -78,6 +86,8 @@ const stepRowSchema = z
 		}
 	});
 
+const checkpointAnswerRowSchema = z.object({ answerId: z.string().min(1) });
+
 function issue(ctx: z.RefinementCtx, message: string): void {
 	ctx.addIssue({ code: 'custom', message });
 }
@@ -92,7 +102,78 @@ export type RunAnswerOptions = {
 	now?: () => Date;
 };
 
+export type RunSingleAnswerJobOptions = RunAnswerOptions & {
+	/** Failed jobs resume only when the caller explicitly opts in. */
+	retryFailed?: boolean;
+};
+
 export class RunnerError extends Error {}
+
+/**
+ * Own the lifecycle of one job containing exactly one answer.
+ *
+ * This is deliberately not the future multi-answer scheduler. The conditional
+ * status update is the ownership boundary; running jobs are never guessed dead.
+ */
+export async function runSingleAnswerJob(options: RunSingleAnswerJobOptions): Promise<EssayResult> {
+	const { jobId, answerId, retryFailed } = jobOptionsSchema.parse(options);
+	const now = options.now ?? (() => new Date());
+	const job = await loadJob(options.db, jobId);
+	const answer = await loadAnswer(options.db, answerId);
+	validatePaperAndOwnership(job, answer, jobId, answerId);
+	if (job.totalAnswers !== 1) {
+		throw new RunnerError(
+			`job ${jobId} must contain exactly one answer, found ${job.totalAnswers}`
+		);
+	}
+	await assertCheckpointAnswer(options.db, jobId, answerId);
+
+	const rows = await loadSteps(options.db, jobId, answerId);
+	if (job.status === 'completed') {
+		return hydrateCompletedResult(options.llm, answer, rows, jobId);
+	}
+	assertClaimableStatus(job.status, retryFailed, jobId);
+
+	const claimable = retryFailed ? (['queued', 'failed'] as const) : (['queued'] as const);
+	const [claimed] = await options.db
+		.update(jobs)
+		.set({
+			status: 'running',
+			completedAnswers: 0,
+			failedAnswers: 0,
+			startedAt: now(),
+			finishedAt: null
+		})
+		.where(and(eq(jobs.id, jobId), inArray(jobs.status, claimable)))
+		.returning({ id: jobs.id });
+
+	if (!claimed) {
+		const current = await loadJob(options.db, jobId);
+		validatePaperAndOwnership(current, answer, jobId, answerId);
+		if (current.totalAnswers !== 1) {
+			throw new RunnerError(
+				`job ${jobId} must contain exactly one answer, found ${current.totalAnswers}`
+			);
+		}
+		await assertCheckpointAnswer(options.db, jobId, answerId);
+		if (current.status === 'completed') {
+			const currentRows = await loadSteps(options.db, jobId, answerId);
+			return hydrateCompletedResult(options.llm, answer, currentRows, jobId);
+		}
+		throw statusError(current.status, retryFailed, jobId);
+	}
+
+	let result: EssayResult;
+	try {
+		result = await runAnswer(options);
+	} catch (error) {
+		await settleJob(options.db, jobId, 'failed', now());
+		throw error;
+	}
+
+	await settleJob(options.db, jobId, hasAllScores(result) ? 'completed' : 'failed', now());
+	return result;
+}
 
 /**
  * Grade or resume one answer inside an existing job.
@@ -104,21 +185,8 @@ export async function runAnswer(options: RunAnswerOptions): Promise<EssayResult>
 	const { jobId, answerId } = idsSchema.parse(options);
 	const now = options.now ?? (() => new Date());
 	const job = await loadJob(options.db, jobId);
-	if (job.paperType !== 'p1') {
-		throw new RunnerError(
-			`job ${jobId}'s assignment is ${job.paperType}; only Paper 1 is supported`
-		);
-	}
 	const answer = await loadAnswer(options.db, answerId);
-
-	if (job.assignmentId !== answer.assignmentId) {
-		throw new RunnerError(`answer ${answerId} does not belong to job ${jobId}'s assignment`);
-	}
-	if (answer.questionAssignmentId !== answer.assignmentId) {
-		throw new RunnerError(
-			`question ${answer.questionId} does not belong to answer ${answerId}'s assignment`
-		);
-	}
+	validatePaperAndOwnership(job, answer, jobId, answerId);
 
 	const rows = await loadSteps(options.db, jobId, answerId);
 	if (rows.length === 0 && hasGradingOutput(answer)) {
@@ -127,15 +195,7 @@ export async function runAnswer(options: RunAnswerOptions): Promise<EssayResult>
 		);
 	}
 
-	const checkpoints: SucceededStepResult[] = rows
-		.filter((row) => row.status === 'succeeded')
-		.map((row) => ({
-			stepId: row.stepId,
-			status: 'succeeded',
-			attempts: row.attempt,
-			reply: row.rawReply!,
-			output: row.output
-		}));
+	const checkpoints = checkpointsOf(rows);
 
 	await options.db
 		.insert(stepResults)
@@ -189,7 +249,17 @@ export async function runAnswer(options: RunAnswerOptions): Promise<EssayResult>
 
 async function loadJob(db: Database, jobId: string) {
 	const [row] = await db
-		.select({ id: jobs.id, assignmentId: jobs.assignmentId, paperType: assignments.paperType })
+		.select({
+			id: jobs.id,
+			assignmentId: jobs.assignmentId,
+			paperType: assignments.paperType,
+			status: jobs.status,
+			totalAnswers: jobs.totalAnswers,
+			completedAnswers: jobs.completedAnswers,
+			failedAnswers: jobs.failedAnswers,
+			startedAt: jobs.startedAt,
+			finishedAt: jobs.finishedAt
+		})
 		.from(jobs)
 		.innerJoin(assignments, eq(assignments.id, jobs.assignmentId))
 		.where(eq(jobs.id, jobId));
@@ -237,6 +307,128 @@ async function loadSteps(db: Database, jobId: string, answerId: string) {
 		.from(stepResults)
 		.where(and(eq(stepResults.jobId, jobId), eq(stepResults.answerId, answerId)));
 	return z.array(stepRowSchema).parse(rows);
+}
+
+async function assertCheckpointAnswer(
+	db: Database,
+	jobId: string,
+	answerId: string
+): Promise<void> {
+	const rows = z
+		.array(checkpointAnswerRowSchema)
+		.parse(
+			await db
+				.select({ answerId: stepResults.answerId })
+				.from(stepResults)
+				.where(eq(stepResults.jobId, jobId))
+		);
+	const checkpointAnswerIds = [...new Set(rows.map((row) => row.answerId))];
+	if (
+		checkpointAnswerIds.length > 0 &&
+		(checkpointAnswerIds.length !== 1 || checkpointAnswerIds[0] !== answerId)
+	) {
+		throw new RunnerError(
+			`answer ${answerId} does not match job ${jobId}'s checkpointed answer (${checkpointAnswerIds.join(', ')})`
+		);
+	}
+}
+
+type JobRow = z.infer<typeof jobRowSchema>;
+type AnswerRow = z.infer<typeof answerRowSchema>;
+type StepRow = z.infer<typeof stepRowSchema>;
+
+function validatePaperAndOwnership(
+	job: JobRow,
+	answer: AnswerRow,
+	jobId: string,
+	answerId: string
+): void {
+	if (job.paperType !== 'p1') {
+		throw new RunnerError(
+			`job ${jobId}'s assignment is ${job.paperType}; only Paper 1 is supported`
+		);
+	}
+	if (job.assignmentId !== answer.assignmentId) {
+		throw new RunnerError(`answer ${answerId} does not belong to job ${jobId}'s assignment`);
+	}
+	if (answer.questionAssignmentId !== answer.assignmentId) {
+		throw new RunnerError(
+			`question ${answer.questionId} does not belong to answer ${answerId}'s assignment`
+		);
+	}
+}
+
+function checkpointsOf(rows: StepRow[]): SucceededStepResult[] {
+	return rows
+		.filter((row) => row.status === 'succeeded')
+		.map((row) => ({
+			stepId: row.stepId,
+			status: 'succeeded',
+			attempts: row.attempt,
+			reply: row.rawReply!,
+			output: row.output
+		}));
+}
+
+async function hydrateCompletedResult(
+	llm: LlmClient,
+	answer: AnswerRow,
+	rows: StepRow[],
+	jobId: string
+): Promise<EssayResult> {
+	if (rows.length !== STEPS.length || rows.some((row) => row.status !== 'succeeded')) {
+		throw new RunnerError(`completed job ${jobId} does not have 16 succeeded checkpoints`);
+	}
+	const result = await gradeEssay(
+		{ essay: answer.essay, question: answer.question, context: answer.context ?? '' },
+		{ llm, resumeFrom: checkpointsOf(rows) }
+	);
+	if (!hasAllScores(result)) {
+		throw new RunnerError(`completed job ${jobId} has a missing score`);
+	}
+	return result;
+}
+
+function assertClaimableStatus(
+	status: JobRow['status'],
+	retryFailed: boolean,
+	jobId: string
+): void {
+	if (status !== 'queued' && !(status === 'failed' && retryFailed)) {
+		throw statusError(status, retryFailed, jobId);
+	}
+}
+
+function statusError(status: JobRow['status'], retryFailed: boolean, jobId: string): RunnerError {
+	if (status === 'running') return new RunnerError(`job ${jobId} is already running`);
+	if (status === 'failed' && !retryFailed) {
+		return new RunnerError(`job ${jobId} is failed; set retryFailed to resume it`);
+	}
+	if (status === 'cancelled') return new RunnerError(`job ${jobId} is cancelled`);
+	return new RunnerError(`job ${jobId} could not be claimed from status ${status}`);
+}
+
+function hasAllScores(result: EssayResult): boolean {
+	return CRITERIA.every((criterion) => result.scores[criterion] !== null);
+}
+
+async function settleJob(
+	db: Database,
+	jobId: string,
+	status: 'completed' | 'failed',
+	finishedAt: Date
+): Promise<void> {
+	const [settled] = await db
+		.update(jobs)
+		.set({
+			status,
+			completedAnswers: status === 'completed' ? 1 : 0,
+			failedAnswers: status === 'failed' ? 1 : 0,
+			finishedAt
+		})
+		.where(and(eq(jobs.id, jobId), eq(jobs.status, 'running')))
+		.returning({ id: jobs.id });
+	if (!settled) throw new RunnerError(`job ${jobId} lost ownership before settlement`);
 }
 
 function hasGradingOutput(answer: z.infer<typeof answerRowSchema>): boolean {

@@ -29,10 +29,10 @@ These are product truths, not preferences. Most are lint- or CI-enforced; all of
 
 ## Current boundary
 
-The database schema, pure 16-step pipeline, and DB-backed per-answer checkpoint runner are built.
-Job orchestration/process lifecycle, real CLI commands, provider adapter/configuration, and viewer
-are not. Provider choice, provider batch APIs, and cross-essay concurrency are open decisions; do
-not infer them from legacy defaults in the code.
+The database schema, pure 16-step pipeline, DB-backed per-answer checkpoints, and atomic
+single-answer job lifecycle are built. Multi-answer orchestration, process recovery, real CLI
+commands, provider adapter/configuration, and viewer are not. Provider choice, provider batch APIs,
+and cross-essay concurrency are open decisions; do not infer them from legacy defaults in the code.
 
 The next milestone is one provider-neutral end-to-end vertical slice. Acceptance needs one or two
 real essays. A batch-mechanics test may run roughly 20 duplicates with a fake model; it is not a
