@@ -59,7 +59,8 @@ const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(r
  */
 export async function withRetry<T>(
 	operation: () => Promise<T>,
-	options: RetryOptions = {}
+	options: RetryOptions = {},
+	beforeAttempt?: () => void | Promise<void>
 ): Promise<T> {
 	const attempts = options.attempts ?? 3;
 	const baseDelayMs = options.baseDelayMs ?? 1000;
@@ -67,6 +68,10 @@ export async function withRetry<T>(
 
 	let lastError: unknown;
 	for (let attempt = 1; attempt <= attempts; attempt += 1) {
+		// Lifecycle persistence is deliberately outside the retry catch. If it
+		// fails, no provider call is made and the caller sees the storage failure
+		// rather than misclassifying it as a retryable model error.
+		await beforeAttempt?.();
 		try {
 			return await operation();
 		} catch (err) {

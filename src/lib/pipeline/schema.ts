@@ -81,8 +81,8 @@ export type AnalysisNote = z.infer<typeof analysisNoteSchema>;
  *
  * v1's `_parse_and_collect` caught the decode error, logged a warning, and let
  * the step report success with the annotations missing (defect D6). Here a parse
- * failure is a parse failure — `safeParse` fails, the step fails, and the
- * scheduler retries it.
+ * failure is a parse failure — `safeParse` fails, the step fails, and a resumed
+ * run retries it.
  */
 export function annotationListSchema<T extends z.ZodType>(note: T) {
 	return z.union([z.array(note), note.transform((one) => [one])]);
@@ -148,10 +148,20 @@ export function inStepOrder<T>(byStep: Map<number, T[]>): T[] {
 	return [...byStep.entries()].sort(([a], [b]) => a - b).flatMap(([, notes]) => notes);
 }
 
+/** A durable successful step: enough to rebuild state without another model call. */
+export type SucceededStepResult = {
+	stepId: number;
+	status: 'succeeded';
+	attempts: number;
+	/** The original reasoning reply, required to restore rolling conversations exactly. */
+	reply: string;
+	/** The step-kind-specific, Zod-validated projection of `reply`. */
+	output: unknown;
+};
+
 /** What one step produced, or why it could not. */
 export type StepResult =
-	| { stepId: number; status: 'succeeded'; attempts: number; output: unknown }
-	| { stepId: number; status: 'failed'; attempts: number; error: string };
+	SucceededStepResult | { stepId: number; status: 'failed'; attempts: number; error: string };
 
 /** One essay's finished grading. Incomplete criteria stay null — never 0, never 3. */
 export type EssayResult = {

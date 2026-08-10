@@ -19,6 +19,7 @@ import {
 	type PipelineState,
 	type StepResult
 } from './schema';
+import { applyStepOutput, restoreCheckpoints } from './checkpoint';
 import { analysisAnnotationsSchema, languageAnnotationsSchema, STEPS, type Step } from './steps';
 
 /**
@@ -40,11 +41,16 @@ import { analysisAnnotationsSchema, languageAnnotationsSchema, STEPS, type Step 
 export type GradeDeps = {
 	llm: LlmClient;
 	/**
-	 * Fired as each step settles, so the runner can persist a `step_results` row
-	 * without waiting for the essay to finish. A callback rather than an async
-	 * generator: a slow consumer must not stall the in-essay parallelism.
+	 * Durable successes from an earlier invocation. Validated and replayed before
+	 * any new model call; malformed or dependency-incomplete sets are rejected.
 	 */
-	onStep?: (result: StepResult) => void;
+	resumeFrom?: unknown;
+	/** Persist `running` before a ready step spends model budget. */
+	onStepStart?: (stepId: number) => void | Promise<void>;
+	/** Persist one cumulative attempt immediately before each model request. */
+	onModelCall?: (stepId: number) => void | Promise<void>;
+	/** Persist the terminal result before a dependent wave may begin. */
+	onStepSettled?: (result: StepResult) => void | Promise<void>;
 	retry?: RetryOptions;
 };
 
@@ -52,8 +58,8 @@ export async function gradeEssay(rawInput: unknown, deps: GradeDeps): Promise<Es
 	const input = essayInputSchema.parse(rawInput);
 	const state = initialState(paragraphsOf(input.essay));
 
-	const results = new Map<number, StepResult>();
-	const pending = new Set(STEPS.map((step) => step.id));
+	const results = new Map<number, StepResult>(restoreCheckpoints(deps.resumeFrom, input, state));
+	const pending = new Set(STEPS.filter((step) => !results.has(step.id)).map((step) => step.id));
 
 	while (pending.size > 0) {
 		const ready = STEPS.filter((step) => pending.has(step.id) && isReady(step, results));
@@ -63,17 +69,20 @@ export async function gradeEssay(rawInput: unknown, deps: GradeDeps): Promise<Es
 			for (const step of STEPS.filter((candidate) => pending.has(candidate.id))) {
 				const result = skipped(step, results);
 				results.set(step.id, result);
-				deps.onStep?.(result);
+				await deps.onStepSettled?.(result);
 			}
 			break;
 		}
 
+		// Persist starts deterministically, then retain the existing in-wave model
+		// concurrency. No API budget is spent if the durable start write fails.
+		for (const step of ready) await deps.onStepStart?.(step.id);
 		const settled = await Promise.all(ready.map((step) => runStep(step, input, state, deps)));
 
 		for (const result of settled) {
 			results.set(result.stepId, result);
 			pending.delete(result.stepId);
-			deps.onStep?.(result);
+			await deps.onStepSettled?.(result);
 		}
 	}
 
@@ -110,12 +119,14 @@ async function runStep(
 	deps: GradeDeps
 ): Promise<StepResult> {
 	let attempts = 0;
-	const count =
-		<T>(operation: () => Promise<T>) =>
-		async () => {
-			attempts += 1;
-			return operation();
-		};
+	const beforeModelCall = async () => {
+		attempts += 1;
+		try {
+			await deps.onModelCall?.(step.id);
+		} catch (err) {
+			throw new StepLifecycleError(step.id, err);
+		}
+	};
 
 	try {
 		const fresh = step.messages(input, state);
@@ -123,19 +134,21 @@ async function runStep(
 		const messages = [...history, ...fresh];
 
 		const reply = await withRetry(
-			count(() => deps.llm.complete({ messages, temperature: TEMPERATURE_REASONING })),
-			deps.retry
+			() => deps.llm.complete({ messages, temperature: TEMPERATURE_REASONING }),
+			deps.retry,
+			beforeModelCall
 		);
 
-		// The rolling history grows only on success, so a retried step cannot
-		// leave half a turn behind for the next paragraph to inherit.
+		const output = await parseReply(step, reply, deps, beforeModelCall);
+		// A malformed reply is not a successful conversation turn. Append only
+		// after parsing and score extraction both finish.
 		if (step.conversation) {
 			state[step.conversation] = [...messages, { role: 'assistant', content: reply }];
 		}
-
-		const output = await applyReply(step, reply, state, deps, count);
-		return { stepId: step.id, status: 'succeeded', attempts, output };
+		applyStepOutput(step, output, reply, state);
+		return { stepId: step.id, status: 'succeeded', attempts, reply, output };
 	} catch (err) {
+		if (err instanceof StepLifecycleError) throw err;
 		return {
 			stepId: step.id,
 			status: 'failed',
@@ -145,42 +158,47 @@ async function runStep(
 	}
 }
 
-type Counter = <T>(operation: () => Promise<T>) => () => Promise<T>;
+class StepLifecycleError extends Error {
+	constructor(stepId: number, cause: unknown) {
+		super(
+			`step ${stepId}: model-call persistence failed: ${cause instanceof Error ? cause.message : String(cause)}`
+		);
+		this.name = 'StepLifecycleError';
+	}
+}
+
+type BeforeModelCall = () => void | Promise<void>;
 
 /**
  * Turn a reply into state. Every path either produces a value or throws.
  *
  * v1's parser caught the JSON decode error, logged a warning, and reported the
  * step successful with the annotations missing (defect D6). A parse failure here
- * fails the step, so the scheduler retries it and, if it still fails, the
- * criterion stays null rather than quietly wrong.
+ * fails the step, so a resumed run retries it and the criterion stays null rather
+ * than quietly wrong in the meantime.
  */
-async function applyReply(
+async function parseReply(
 	step: Step,
 	reply: string,
-	state: PipelineState,
 	deps: GradeDeps,
-	count: Counter
+	beforeModelCall: BeforeModelCall
 ): Promise<unknown> {
 	switch (step.kind) {
 		case 'annotate_language': {
 			const parsed = languageAnnotationsSchema.safeParse(parseJson(reply, step.id));
 			if (!parsed.success) throw new Error(`step ${step.id}: ${parsed.error.issues[0]?.message}`);
-			state.languageAnnotations.set(step.id, parsed.data);
 			return parsed.data;
 		}
 
 		case 'structure_paragraph': {
 			// Keyed by the step that produced it, never appended to a list read
 			// back by computed index (defect D3).
-			state.structuralAnalyses.set(step.id, reply);
 			return reply;
 		}
 
 		case 'annotate_analysis': {
 			const parsed = analysisAnnotationsSchema.safeParse(parseJson(reply, step.id));
 			if (!parsed.success) throw new Error(`step ${step.id}: ${parsed.error.issues[0]?.message}`);
-			state.analysisAnnotations.set(step.id, parsed.data);
 			return parsed.data;
 		}
 
@@ -192,20 +210,11 @@ async function applyReply(
 				// carried on, so a malformed reply reached the viewer as content.
 				throw new Error(`step ${step.id}: reply is missing <mermaid> or <description>`);
 			}
-			state.structureGraph = graph;
-			state.structureDescription = description;
 			return { graph, description };
 		}
 
 		case 'compute_final_score': {
-			if (step.criterion === 'understanding') {
-				// Step 16's reasoning is the Criterion A annotation. v1 declared this
-				// and then overwrote it with the extracted digit, so the prose was
-				// lost in every stored record — keep it before extracting.
-				state.understandingAnnotation = reply;
-			}
-			const score = await extractScore(reply, deps, count);
-			state.scores[step.criterion] = score;
+			const score = await extractScore(reply, deps, beforeModelCall);
 			return { score };
 		}
 	}
@@ -246,7 +255,7 @@ export function between(text: string, open: string, close: string): string | nul
 export async function extractScore(
 	reasoning: string,
 	deps: GradeDeps,
-	count: Counter = (operation) => operation
+	beforeModelCall: BeforeModelCall = () => undefined
 ): Promise<number> {
 	const messages: ChatMessage[] = [
 		{ role: 'system', content: SCORE_EXTRACTION_PROMPT },
@@ -254,8 +263,9 @@ export async function extractScore(
 	];
 
 	const reply = await withRetry(
-		count(() => deps.llm.complete({ messages, temperature: TEMPERATURE_EXTRACTION })),
-		deps.retry
+		() => deps.llm.complete({ messages, temperature: TEMPERATURE_EXTRACTION }),
+		deps.retry,
+		beforeModelCall
 	);
 
 	const score = readScore(reply);

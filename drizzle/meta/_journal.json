@@ -8,6 +8,13 @@
       "when": 1785476750291,
       "tag": "0000_naive_red_hulk",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1786176677140,
+      "tag": "0001_huge_echo",
+      "breakpoints": true
     }
   ]
 }

@@ -7,13 +7,13 @@ authority.
 
 ## Where the rebuild is
 
-| Phase                      | State                                | Evidence                                                                      |
-| -------------------------- | ------------------------------------ | ----------------------------------------------------------------------------- |
-| Toolchain and CI           | Complete                             | `bun run check`, GitHub Actions, protected `main`                             |
-| Database foundation        | Complete                             | Schema, migration, factory, seed conversion; merged in PR #3                  |
-| Pure grading pipeline      | Complete                             | Ported prompts, schemas, 16-step DAG, retry/failure behavior; merged in PR #4 |
-| Context recovery for Codex | Complete on `codex/context-recovery` | Tracked agent map, this document, project MCP and safety setup                |
-| Runnable product slice     | Not started                          | Runner, operational CLI, provider adapter/config, and viewer remain           |
+| Phase                      | State       | Evidence                                                                        |
+| -------------------------- | ----------- | ------------------------------------------------------------------------------- |
+| Toolchain and CI           | Complete    | `bun run check`, GitHub Actions, protected `main`                               |
+| Database foundation        | Complete    | Schema, migration, factory, seed conversion; merged in PR #3                    |
+| Pure grading pipeline      | Complete    | Ported prompts, schemas, 16-step DAG, retry/failure behavior; merged in PR #4   |
+| Context recovery for Codex | Complete    | Tracked guidance and safety setup; merged in PR #5                              |
+| Runnable product slice     | In progress | Per-answer checkpoint runner built; orchestration, CLI, provider, viewer remain |
 
 The pipeline is a deterministic procedure around stochastic model outputs. “Same process” means
 the same step DAG, dependencies, prompts, temperatures, and conversation shape; it does not mean
@@ -24,17 +24,24 @@ repeatable.
 
 - `src/lib/server/db/`: framework-free database factory plus Drizzle schema and migrations.
 - `src/lib/pipeline/`: validated essay input, fixed prompts, executable 16-step dependency graph,
-  in-essay wave scheduling, injected model boundary, retries, score extraction, and typed results.
+  in-essay wave scheduling, injected model boundary, retries, score extraction, typed results, and
+  exact hydration from durable successful-step checkpoints.
+- `src/lib/runner/`: provider-neutral `runAnswer()` persistence around one answer, including
+  step lifecycle rows, cumulative attempts, failure resume, final projection, and score audit.
 - A CLI stub that only validates database setup. The README command table is an intended contract,
   not currently available behavior.
 - A placeholder SvelteKit page. There is no results viewer yet.
-- 102 offline tests at the time of this recovery pass. The exact current count comes from
-  `bun run check`, not from this sentence.
+- Offline pipeline, migration, and runner tests. The exact current count comes from
+  `bun run check`.
 
-The pipeline remains persistence-free. It emits step results through an injected callback; the
-future runner owns SQLite persistence, resume behavior, cross-essay scheduling, and process
-lifecycle. The CLI owns arguments, environment lookup, stdout/stderr, and exit codes. Routes read
-the database and never execute grading.
+The pipeline remains persistence-free. It emits awaitable lifecycle events; the per-answer runner
+persists them and restores only validated successes. The future job runner still owns cross-essay
+scheduling, job counts/status, and process lifecycle. The CLI owns arguments, environment lookup,
+stdout/stderr, and exit codes. Routes read the database and never execute grading.
+
+The checkpoint contract is deliberately single-owner: two processes must not call `runAnswer()`
+for the same job and answer concurrently. The future job runner supplies that ownership boundary.
+An incomplete step has at-least-once semantics; a durable success is never called again.
 
 ## Settled product rules
 
@@ -71,11 +78,11 @@ Record a decision here when evidence settles it; do not leave the answer only in
 
 Build the smallest path that proves the architecture:
 
-1. Define provider-neutral runner and provider configuration boundaries without choosing through
-   accidental constants.
+1. Extend the provider-neutral per-answer runner into job orchestration and define provider
+   configuration boundaries without choosing through accidental constants.
 2. Ingest and persist one valid five-paragraph essay.
 3. Execute the existing pipeline through one selected experimental provider adapter.
-4. Persist step results and final result, then resume safely after an injected failure.
+4. Use the implemented checkpoint contract to persist and resume real provider runs safely.
 5. Expose the minimum CLI commands needed to start the run and inspect its result.
 
 Acceptance is one or two real essays completing end to end. To exercise batch mechanics, reuse a

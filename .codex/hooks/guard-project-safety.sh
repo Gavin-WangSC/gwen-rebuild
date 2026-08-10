@@ -4,6 +4,7 @@ set -euo pipefail
 input=$(cat)
 payload=$(jq -c '.tool_input // {}' <<<"$input" 2>/dev/null || printf '{}')
 tool_name=$(jq -r '.tool_name // .tool // ""' <<<"$input" 2>/dev/null || printf '')
+lower_tool=$(printf '%s' "$tool_name" | tr '[:upper:]' '[:lower:]')
 
 # This is the only irreplaceable local data near the repo. Reads are allowed;
 # writes are not. ApplyPatch/Write/Edit-style tools expose the target somewhere
@@ -18,6 +19,19 @@ if [[ "$payload" == *gwen-app/data* ]]; then
 fi
 
 command=$(jq -r '.tool_input.command // .tool_input.cmd // ""' <<<"$input" 2>/dev/null || printf '')
+
+# An approved uncommitted-diff review proves the next commit, not a later push.
+command_tool='(^|[.:/])exec_command$'
+review_commit='(^|[[:space:];&|(])git([[:space:]]+[^[:space:];&|]+)*[[:space:]]+commit([[:space:]]|$)'
+if [[ "$lower_tool" =~ $command_tool ]] && [[ "$command" =~ $review_commit ]]; then
+	repo_root=$(cd "$(dirname "$0")/../.." && pwd)
+	if [[ -f "$repo_root/review.md" ]]; then
+		if ! (cd "$repo_root" && bun run review:check); then
+			echo "Blocked: review.md is stale or has unresolved findings." >&2
+			exit 2
+		fi
+	fi
+fi
 if [[ "$command" == *gwen-app/data* ]]; then
 	destructive='(^|[[:space:];&|(])(rm|rmdir|mv|dd|shred|unlink|truncate)([[:space:]]|$)'
 	redirect='>>?[[:space:]]*[^[:space:];&|]*gwen-app/data'

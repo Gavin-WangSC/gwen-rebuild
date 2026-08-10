@@ -1,0 +1,4 @@
+interface:
+  display_name: 'Review Builder'
+  short_description: 'Implement work and propose review resolutions'
+  default_prompt: 'Use $review-builder to implement the assigned GWen work and prepare it for independent review.'
