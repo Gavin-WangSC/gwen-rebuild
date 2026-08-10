@@ -2,7 +2,14 @@ import { migrate } from 'drizzle-orm/libsql/migrator';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createDb, type Database } from '../server/db';
-import { answers, assignments, jobs, questions, students } from '../server/db/schema';
+import {
+	answers,
+	assignments,
+	jobs,
+	questions,
+	students,
+	type JobStatus
+} from '../server/db/schema';
 import { templates } from '../pipeline/prompts';
 import type { CompletionRequest, LlmClient } from '../pipeline/llm';
 
@@ -64,6 +71,9 @@ export async function seedRun(
 		answerAssignmentId?: string;
 		questionAssignmentId?: string;
 		scoreLanguage?: number;
+		essay?: string;
+		jobStatus?: JobStatus;
+		totalAnswers?: number;
 	} = {}
 ): Promise<void> {
 	const now = new Date('2026-08-08T08:00:00Z');
@@ -98,7 +108,7 @@ export async function seedRun(
 		assignmentId: answerAssignmentId,
 		questionId: 'q-1',
 		studentId: 'stu-1',
-		essay: ESSAY,
+		essay: options.essay ?? ESSAY,
 		scoreLanguage: options.scoreLanguage,
 		createdAt: now,
 		updatedAt: now
@@ -106,8 +116,8 @@ export async function seedRun(
 	await db.insert(jobs).values({
 		id: INPUT_IDS.jobId,
 		assignmentId: 'asg-1',
-		status: 'running',
-		totalAnswers: 1,
+		status: options.jobStatus ?? 'running',
+		totalAnswers: options.totalAnswers ?? 1,
 		createdAt: now
 	});
 }
